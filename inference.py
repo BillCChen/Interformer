@@ -20,7 +20,7 @@ from utils.eval import cal_per_target
 os.environ["NCCL_IB_DISABLE"] = "1"
 args = get_args()
 args['inference'] = True
-
+args['device'] = torch.device(args['gpus'])
 os.makedirs('result', exist_ok=True)
 # rm energy folder's files
 if args['energy_output_folder']:
@@ -31,20 +31,19 @@ if args['energy_output_folder']:
     os.makedirs(energy_output_folder, exist_ok=True)
 
 
-def collect_results_gpu(result_part, device='cpu'):
+def collect_results_gpu(result_part):
     rank, world_size = dist.get_rank(), dist.get_world_size()
     # dump result part to tensor with pickle
     part_tensor = torch.tensor(
-        bytearray(pickle.dumps(result_part)), dtype=torch.uint8, device=device)
+        bytearray(pickle.dumps(result_part)), dtype=torch.uint8, device='cuda')
     # gather all result part tensor shape
-    shape_tensor = torch.tensor(part_tensor.shape, device=device)
+    shape_tensor = torch.tensor(part_tensor.shape, device='cuda')
     shape_list = [shape_tensor.clone() for _ in range(world_size)]
-    if device == 'cuda':
-        torch.cuda.synchronize()
+    torch.cuda.synchronize()
     dist.all_gather(shape_list, shape_tensor)
     # padding result part tensor to max length
     shape_max = torch.tensor(shape_list).max()
-    part_send = torch.zeros(shape_max, dtype=torch.uint8, device=device)
+    part_send = torch.zeros(shape_max, dtype=torch.uint8, device='cuda')
     part_send[:shape_tensor[0]] = part_tensor
     part_recv_list = [
         part_tensor.new_zeros(shape_max) for _ in range(world_size)
@@ -111,7 +110,7 @@ for checkpoint_folder in args['ensemble']:
     args = refresh_args(args, model)
     model_args = model.hparams.args
     param_count(model, print_model=False)
-    inferencer = pl.Trainer(devices=1 if args['gpus'] == 'cpu' else args['gpus'], accelerator='cuda' if args['gpus'] != 'cpu' else 'cpu', strategy='ddp', precision=args['precision'],
+    inferencer = pl.Trainer(devices=args['gpus'], accelerator='cuda', strategy='ddp', precision=args['precision'],
                             logger=False)
     for csv in args['test_csv']:
         print("# csv <--", csv)
@@ -125,14 +124,14 @@ for checkpoint_folder in args['ensemble']:
                                     num_workers=0 if args['debug'] else 5)
         # predict
         res = inferencer.predict(model, dataloaders=loader)
-        results = collect_results_gpu(res, device=args['gpus'])
+        results = collect_results_gpu(res)
         rank = dist.get_rank()
-        if rank == 0 and (not model_args['energy_mode']):
+        if rank == 0:
             #########
             # calculate score
             pred, Y, targets = results
             pred = pred.float()
-            if pred.size(0):
+            if pred.size(0) and not model_args['energy_mode']:
                 # multi-task output
                 if pred.size(-1) > 1:
                     affinity_pred, pose_pred = pred[:, 0].view(-1, 1), torch.sigmoid(pred[:, 1])
@@ -211,5 +210,5 @@ def ensemble(ensemble_results):
 
 ##########
 # Master Calculate
-if rank == 0 and (not args['energy_mode']):
+if rank == 0:
     ensemble(ensemble_results)

@@ -91,6 +91,11 @@ def get_args():
     parser.add_argument('-uff_as_ligand', default=False, action='store_true', required=False,
                         help='Switch to uff as the reference ligand to do predictions,'
                              ' using it while uff ligand are not the same with reference ligands.')
+    # add some lmdb key word for Rerank inference
+    parser.add_argument('--pocket_lmdb', default="pocket.lmdb",type=str, required=False)
+    parser.add_argument('--ligand_lmdb', default="ligand.lmdb",type=str, required=False)
+    parser.add_argument('--result', default="/data_result",type=str, required=False)
+    parser.add_argument('--redocking_mode', default=False, action='store_true', required=False)
     ####
     # JIZHI
     import json
@@ -118,11 +123,7 @@ def get_args():
     #####################
     # Hard Code
     # device, default is using all available gpus
-    n_gpus = torch.cuda.device_count()
-    print(f"Available GPUS:{n_gpus}")
-    if n_gpus == 0:
-        print("using CPU now")
-        args['gpus'] = 'cpu'
+    print(f"Available GPUS:{torch.cuda.device_count()}")
     set_random_seed(args['seed'])
     print(f"# Using GPUS:{args['gpus']}")
     #####

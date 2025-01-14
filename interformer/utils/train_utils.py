@@ -98,8 +98,13 @@ def get_callbacks(args):
     return checkpoints + [early_stop_callback, lrm_callback, swa_callback]
 
 
-def get_checkpoint_realpath(checkpoint_folder, posfix='*epoch*val_r*'):
-    f = glob.glob(f"{checkpoint_folder}/checkpoints/{posfix}")
+def get_checkpoint_realpath(checkpoint_folder, posfix='*epoch*val_r*',type='affinity'):
+    if type == 'affinity':
+        f = glob.glob(f"{checkpoint_folder}/v0.2_affinity_model/model*/checkpoints/{posfix}")
+    elif type == 'energy':
+        f = glob.glob(f"{checkpoint_folder}/v0.2_energy_model/checkpoints/{posfix}")
+    else:
+        return ''
     if len(f) == 0:
         return ''
     return f[0]

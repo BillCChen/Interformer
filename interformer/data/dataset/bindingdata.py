@@ -1,5 +1,4 @@
 import gc
-
 import pandas as pd
 import os
 from data.data_utils import pmap
@@ -8,8 +7,10 @@ from feats.third_rd_lib import load_by_rdkit, sdf_load, sdf_load_full
 import glob
 from data.data_stucture.lmdb_dataset import Subset
 from data.dataset.common_dataset import Dataset
-
-
+from rdkit import Chem
+from rdkit.Chem import rdchem
+import io
+from utils.mol_pro_preopare import protonate_rdkit_molecule
 class BindingData(Dataset):
 
     def _filter_df(self, threshold, df, filter_type='normal'):
@@ -143,7 +144,6 @@ class BindingData(Dataset):
                 count += 1
         print(f"[Bindingdata] Pocket count:{count}/{len(uni_targets)}\n" + '=' * 100)
         return pocket_mols
-
     def _get_merge_pairs(self, target, mids, ids, uniprot, docked, pocket_mols, n_jobs):
         print("[Bindingdata] Merging Pocket->Sdf, calculating PLIP.")
         complex_pairs = []
@@ -162,7 +162,6 @@ class BindingData(Dataset):
         complex_mols = pmap(merge_sdf_pdb_by_rdkit, complex_pairs, n_jobs=n_jobs)
         print(f"[Bindingdata] Finished Merging Pocket+Ligand, {merge_count}/{N}\n" + '=' * 100)
         return complex_mols
-
     def _process_uff_ligands(self, complex_mols, targets, ids):
         def find_uff_ligand(uff_folder, pdb):
             # using pdb to find
@@ -265,3 +264,120 @@ class BindingData(Dataset):
         wdata = self._get_dataset(cache_path)
         print('\n' + '+' * 100)
         return wdata
+
+
+class Binding_dict_Data(Dataset):
+    def load_data(self, cache_path):
+        # load cached file
+        if self.args['reload'] and self._check_exists(cache_path):
+            wdata = self._get_dataset(cache_path)
+            return wdata
+        return None
+
+    def __init__(self, args,pocket_, ligands_,istrain=True, n_jobs=1):
+        self.args = args
+        self.set_type = 'lmdb'
+        self.datasets = self._pre_FEP_complex(pocket_, ligands_, n_jobs)
+        print(f"[Bindingdata] Dataloader:{self.set_type} for exchanging dict data to complex data")
+    def create_mol_from_coordinates(atom_types, coordinates):
+        mol = rdchem.RWMol()
+        atom_indices = []
+        # 添加原子
+        for atom_type in atom_types:
+            atom = Chem.Atom(atom_type)
+            idx = mol.AddAtom(atom)
+            atom_indices.append(idx)
+        # 添加坐标
+        conf = rdchem.Conformer(len(atom_types))
+        for i, coord in enumerate(coordinates):
+            conf.SetAtomPosition(i, rdchem.Point3D(coord[0], coord[1], coord[2]))
+        mol.AddConformer(conf)
+        return mol
+    def _get_fep_merge_pairs(self, N,target, uniprot, docked, pocket_mols, n_jobs):
+        print("[Bindingdata] Merging Pocket->Sdf, calculating PLIP.")
+        complex_pairs = []
+        merge_count = 0
+        for i in range(N):
+            t = target[i]
+            id = f'{t}_{i}'
+            try:
+                complex_pairs.append([t, uniprot[i], docked[id], pocket_mols[t]])
+                merge_count += 1
+            except Exception as e:
+                complex_pairs.append([None, None, None, None])
+                pass
+        # pmap
+        complex_mols = pmap(merge_sdf_pdb_by_rdkit, complex_pairs, n_jobs=n_jobs)
+        print(f"[Bindingdata] Finished Merging Pocket+Ligand, {merge_count}/{N}\n" + '=' * 100)
+        return complex_mols
+
+
+    def create_mol_from_sdffile_str(self, sdf_file_str,type='sdf'):
+        sdf_bytes = sdf_file_str.encode('utf-8')
+        sdf_io = io.BytesIO(sdf_bytes)
+        mol = [x for x in Chem.ForwardSDMolSupplier(sdf_io) if x is not None][0]
+        return mol
+    def create_mol_from_pdbfile_str(self, pdb_file_str,type='pdb'):
+        mol = Chem.MolFromPDBBlock(pdb_file_str, sanitize=False, removeHs=True)
+        mol = Chem.RemoveHs(mol, sanitize=False)
+        return mol
+    def _pre_FEP_complex(self,pockets,ligands, n_jobs=1):
+        if pockets is not list:
+            pockets = [pockets]
+        print(f"[Bindingdata] Making complex data {len(ligands)}")
+        # 1. read pocket
+        uniprot = [i['protein'] for i in pockets for _ in range(len(ligands))]
+        target  = [i['protein'] for i in pockets for _ in range(len(ligands))]
+        pocket_mols = {}
+        for pocket_dict in pockets:
+            pocket_mols[pocket_dict['protein']] = self.create_mol_from_pdbfile_str(pocket_dict['pocket']) 
+        # 2. read sdf from file1
+        print(f"[Bindingdata] Loading Ligands SDF...")
+        # 3. setup indices for sdf selection
+        # 3.1 user may use mid
+        docked = {}
+        for idx,r in enumerate(ligands):
+            id = f'{target[idx]}_{idx}'
+            docked[id] = protonate_rdkit_molecule(self.create_mol_from_sdffile_str(r['sdf']))
+        print(f"[Bindingdata] Loaded num of ligands: {len(docked)}\n" + '=' * 100)
+        # 3. Merge pocket & ligand docking pose pdb together
+        N = len(ligands)
+        complex_mols = self._get_fep_merge_pairs(N,target, uniprot, docked, pocket_mols, n_jobs)
+        # clear cached
+        del docked
+        del pocket_mols
+        
+        gc.collect()
+        # 3.5 fake fucntion: use-ff-ligands, wrap intra-D into complex_mols
+        for idx in range(N):
+            complex_mols[idx]['uff_ligand'] = complex_mols[idx]['ligand']
+            complex_mols[idx]['mid'] = idx
+            complex_mols[idx]['uff_as_ligand'] = self.args['uff_as_ligand']
+        
+        # 4. make features by using complex mol
+        complex_data = pmap(self.args['complex_to_data'],
+                            complex_mols,
+                            node_featurizer=self.args['node_featurizer'],
+                            edge_featurizer=self.args['edge_featurizer'],
+                            args=self.args,
+                            n_jobs=n_jobs)
+        # 5. Keep only valid molecules
+        valid_ids = []
+        data = []
+        for i, g in enumerate(complex_data):
+            if g is not None:
+                valid_ids.append(i)
+                g['label'] = ligands[i]['label']
+                g['Target'] = target[i]
+                data.append(g)
+            else:
+                print(target[i], end=',')
+        print(f"@ [Bindingdata] Valid Samples:{len(valid_ids)} / {len(complex_data)}")
+        print('\n' + '+' * 100)
+        
+        self.keys = [f'Complex:{idx}' for idx in range(len(data))]
+        return data
+    def __getitem__(self, idx):
+        return f'Complex:{idx}',self.datasets[idx],idx
+    def __len__(self):
+        return len(self.datasets)

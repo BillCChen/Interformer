@@ -50,7 +50,7 @@ def unpack_dict(X):
 def interformer_collate_fn(data, energy_mode=False):
     names, X, id = list(zip(*data))
     X = unpack_dict(X)
-    Y = torch.tensor(X['pIC50']).view(-1, 1)
+    Y = torch.tensor(X['label']).view(-1, 1)
     # Collecting from batch
     ligand_len = torch.tensor([x[0] for x in X['lens']]).long()
     pocket_len = torch.tensor([x[1] for x in X['lens']]).long()
