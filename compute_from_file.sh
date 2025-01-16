@@ -1,14 +1,14 @@
 eval "$(conda shell.bash hook)"
 conda activate interformer
-PYTHONPATH=/run_interformer/interformer/ python /run_interformer/inference_energy_from_lmdb.py \
---pocket_lmdb /data_lmdb/pocket.lmdb \
---ligand_lmdb /data_lmdb/mol.lmdb \
--ensemble /checkpoints \
--batch_size 1 \
--posfix *val_loss* \
--energy_output_folder /data_lmdb/ \
--reload \
--debug  
+# PYTHONPATH=/run_interformer/interformer/ python /run_interformer/inference_energy_from_lmdb.py \
+# --pocket_lmdb /data_lmdb/pocket.lmdb \
+# --ligand_lmdb /data_lmdb/mol.lmdb \
+# -ensemble /checkpoints \
+# -batch_size 1 \
+# -posfix *val_loss* \
+# -energy_output_folder /data_lmdb/ \
+# -reload \
+# -debug  
 
 # OMP_NUM_THREADS="1,64" python -u /run_interformer/docking/reconstruct_1_ligand_from_lmdb.py \
 # --sdf_ligand fake_input \
